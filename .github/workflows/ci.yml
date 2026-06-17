@@ -1,10 +1,9 @@
 # ============================================================
-# Simple Web CI/CD — Flask + Docker (Windows Server 版本)
+# Simple Web CI/CD — Flask + Docker
 #
-# 流水线:
+# 流水线（禁用自动部署）:
 #   1. validate → 安装依赖 + 运行测试
-#   2. build    → 构建 Docker 镜像 + 导出 tar
-#   3. deploy   → 传输到 Windows Server + 启动容器
+#   2. build    → 构建 Docker 镜像
 # ============================================================
 
 name: Flask CI/CD
@@ -37,105 +36,27 @@ jobs:
         run: python -m pytest test_app.py -v
 
   # ============================================
-  # Job 2: 构建 Docker 镜像 → 导出 tar
+  # Job 2: 构建 Docker 镜像
   # ============================================
   build:
     name: "② 构建镜像"
     needs: validate
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
 
       - name: 构建 Docker 镜像
         run: docker build -t simple-web:latest .
 
-      - name: 导出镜像为 tar
-        run: docker save simple-web:latest -o /tmp/simple-web.tar
-
-      - name: 压缩镜像（减小体积）
-        run: gzip -f /tmp/simple-web.tar
-
-      - name: 上传镜像 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image
-          path: /tmp/simple-web.tar.gz
-          retention-days: 1
+      - name: 验证镜像构建成功
+        run: docker images | grep simple-web
 
   # ============================================
-  # Job 3: 部署到 Windows Server
-  # ============================================
-  deploy:
-    name: "③ 部署至 Windows Server"
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    environment:
-      name: production
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 下载镜像 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image
-          path: ./
-
-      - name: 创建部署目录
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            mkdir -p /opt/simple-web
-
-      - name: 传输文件到服务器
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "docker-compose.prod.yml,simple-web.tar.gz"
-          target: "/opt/simple-web/"
-
-      - name: 加载镜像并启动服务 (PowerShell)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            cd /opt/simple-web
-            
-            echo "=== [1/5] 解压镜像 ==="
-            gunzip -f simple-web.tar.gz
-            
-            echo "=== [2/5] 加载 Docker 镜像 ==="
-            docker load -i simple-web.tar
-            
-            echo "=== [3/5] 复制 compose 文件 ==="
-            cp docker-compose.prod.yml docker-compose.yml
-            
-            echo "=== [4/5] 停止旧容器 ==="
-            docker compose down --remove-orphans || true
-            
-            echo "=== [5/5] 启动新容器 ==="
-            docker compose up -d
-            
-            echo "=== 等待启动 ==="
-            sleep 5
-            
-            echo "=== 运行状态 ==="
-            docker compose ps
-
-  # ============================================
-  # Job 4: 通知
+  # Job 3: 通知
   # ============================================
   notify:
-    name: "④ 结果通知"
-    needs: [validate, build, deploy]
+    name: "③ 结果通知"
+    needs: [validate, build]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -146,8 +67,4 @@ jobs:
           echo "========================================="
           echo "  ① 验证测试 : ${{ needs.validate.result }}"
           echo "  ② 构建镜像 : ${{ needs.build.result }}"
-          echo "  ③ 生产部署 : ${{ needs.deploy.result }}"
           echo "========================================="
-          if [ "${{ needs.deploy.result }}" = "success" ]; then
-            echo "  🌐 http://${{ secrets.SSH_HOST }}"
-          fi
